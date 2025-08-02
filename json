@@ -1,1 +1,173 @@
-[]
+--// Auto-Joiner + Brainrot Scanner + GitHub Sync
+local HttpService       = game:GetService("HttpService")
+local Workspace         = game:GetService("Workspace")
+local Players           = game:GetService("Players")
+local TeleportService   = game:GetService("TeleportService")
+local Marketplace       = game:GetService("MarketplaceService")
+
+--▎ CONFIG ─────────────────────────────────────────────────────────────────
+local allowedPlaceId = 109983668079237
+if game.PlaceId ~= allowedPlaceId then return end
+
+-- GitHub settings
+local githubToken  = "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"                 -- ← your PAT here
+local repoOwner    = "iw929wiwiw"
+local repoName     = "server"
+local filePath     = "json"
+local branch       = "main"
+local rawJsonUrl   = ("https://raw.githubusercontent.com/%s/%s/%s/%s")
+                      :format(repoOwner, repoName, branch, filePath)
+
+-- Brainrot list
+local brainrotGods = {
+    ["Garama and Madundung"]        = true,
+    ["Nuclearo Dinossauro"]         = true,
+    ["La Grande Combinasion"]       = true,
+    ["Chicleteira Bicicleteira"]    = true,
+    ["Secret Lucky Block"]          = true,
+    ["Pot Hotspot"]                 = true,
+    ["Graipuss Medussi"]            = true,
+    ["Las Vaquitas Saturnitas"]     = true,
+    ["Las Tralaleritas"]            = true,
+    ["Los Tralaleritos"]            = true,
+    ["Torrtuginni Dragonfrutini"]   = true,
+    ["Chimpanzini Spiderini"]       = true,
+    ["Sammyini Spidreini"]          = true,
+    ["La Vacca Saturno Saturnita"]  = true,
+}
+
+--▎ UTILITIES ─────────────────────────────────────────────────────────────
+local function getPrimaryPart(model)
+    if model.PrimaryPart then return model.PrimaryPart end
+    for _, part in ipairs(model:GetDescendants()) do
+        if part:IsA("BasePart") then return part end
+    end
+end
+
+-- Prevent duplicate uploads per detection
+local detectedThisServer = {}
+
+--▎ GITHUB SYNC ──────────────────────────────────────────────────────────
+-- Fetch current JSON + file SHA
+local function fetchGitHubData()
+    local apiUrl = ("https://api.github.com/repos/%s/%s/contents/%s?ref=%s")
+                   :format(repoOwner, repoName, filePath, branch)
+    local res = HttpService:RequestAsync({
+        Url     = apiUrl,
+        Method  = "GET",
+        Headers = {
+            ["Authorization"] = "Bearer "..githubToken,
+            ["Accept"]        = "application/vnd.github+json"
+        }
+    })
+    if not res.Success then
+        warn("[GitHub] Failed to fetch file info:", res.StatusCode)
+        return nil
+    end
+    local info = HttpService:JSONDecode(res.Body)
+    local content = HttpService:Base64Decode(info.content)
+    local data = HttpService:JSONDecode(content)
+    return info.sha, data
+end
+
+-- Commit an updated JSON back to GitHub
+local function commitGitHubData(sha, newData)
+    local apiUrl = ("https://api.github.com/repos/%s/%s/contents/%s")
+                   :format(repoOwner, repoName, filePath)
+    local payload = {
+        message   = "Auto-update server list",
+        content   = HttpService:Base64Encode(HttpService:JSONEncode(newData)),
+        sha       = sha,
+        branch    = branch,
+        committer = { name="chatgpt", email="noreply@github.com" }
+    }
+    local res = HttpService:RequestAsync({
+        Url     = apiUrl,
+        Method  = "PUT",
+        Headers = {
+            ["Authorization"] = "Bearer "..githubToken,
+            ["Content-Type"]  = "application/json"
+        },
+        Body    = HttpService:JSONEncode(payload)
+    })
+    if not res.Success then
+        warn("[GitHub] Commit failed:", res.StatusCode, res.Body)
+    end
+end
+
+--▎ UPLOADER ─────────────────────────────────────────────────────────────
+local function uploadThisServer()
+    local sha, data = fetchGitHubData()
+    if not sha then return end
+
+    -- prevent re-upload of same job
+    if detectedThisServer[game.JobId] then return end
+
+    -- avoid duplicates in JSON
+    for _, entry in ipairs(data) do
+        if entry.jobId == game.JobId then
+            detectedThisServer[game.JobId] = true
+            return
+        end
+    end
+
+    table.insert(data, {
+        jobId      = game.JobId,
+        placeId    = game.PlaceId,
+        players    = #Players:GetPlayers(),
+        serverTime = os.time(),
+        foundBy    = Players.LocalPlayer.Name
+    })
+
+    commitGitHubData(sha, data)
+    detectedThisServer[game.JobId] = true
+end
+
+--▎ DETECTION LOOP ───────────────────────────────────────────────────────
+local function scanForBrainrot()
+    for _, model in ipairs(Workspace:GetChildren()) do
+        if model:IsA("Model") and brainrotGods[model.Name] then
+            local part = getPrimaryPart(model)
+            if part then
+                uploadThisServer()
+                return -- only need one upload per detection
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while true do
+        pcall(scanForBrainrot)
+        task.wait(0.5)
+    end
+end)
+
+--▎ AUTO-JOINER ───────────────────────────────────────────────────────────
+task.spawn(function()
+    -- small delay to allow any immediate self-uploads
+    task.wait(3)
+    while true do
+        local success, raw = pcall(function()
+            return game:HttpGet(rawJsonUrl)
+        end)
+        if success then
+            local list = HttpService:JSONDecode(raw)
+            -- newest first
+            table.sort(list, function(a,b) return a.serverTime>b.serverTime end)
+            for _, srv in ipairs(list) do
+                if srv.placeId==game.PlaceId
+                   and srv.jobId~=game.JobId
+                   and srv.players<8 then
+                    TeleportService:TeleportToPlaceInstance(
+                        srv.placeId, srv.jobId, Players.LocalPlayer
+                    )
+                    return
+                end
+            end
+        else
+            warn("[Joiner] Failed to fetch JSON.")
+        end
+        task.wait(2)
+    end
+end)
